@@ -4,7 +4,7 @@ import numpy as np
 import cv2
 import ffmpeg
 
-from io.files import init_directories
+from taltools.io.files import init_directories
 
 
 def take_subclip(video_path, start_time, end_time, fps, out_path):

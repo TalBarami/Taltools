@@ -6,8 +6,8 @@ from matplotlib.figure import Figure
 from pandas import DataFrame
 from tabulate import tabulate
 
-from io.files import init_directories
-from logging.base_logger import BaseLogger
+from taltools.io.files import init_directories
+from taltools.logging.base_logger import BaseLogger
 
 
 class PrintLogger(BaseLogger):

@@ -7,7 +7,7 @@ from matplotlib.figure import Figure
 from neptune.types import File
 from pandas import DataFrame
 
-from logging.base_logger import BaseLogger
+from taltools.logging.base_logger import BaseLogger
 
 
 class NeptuneLogger(BaseLogger):
