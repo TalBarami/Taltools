@@ -1,7 +1,10 @@
 import cv2
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
 
+
+COLORS = [{'name': k.split(':')[1], 'value': tuple(int(v.lstrip('#')[i:i + 2], 16) for i in (0, 2, 4))} for k, v in mcolors.TABLEAU_COLORS.items()]
 
 def blur_area(frame, center, radius, kernel_size=(50, 50)):
     c_mask = np.zeros(frame.shape[:2], np.uint8)
