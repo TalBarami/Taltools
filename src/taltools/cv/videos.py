@@ -32,6 +32,13 @@ def video2img(video_path, out_path):
     cap.release()
 
 
+def fps2time(frame_num, fps):
+    x = frame_num / fps
+    minutes = int(x // 60)
+    seconds = int(x % 60)
+    return f'{minutes:02d}:{seconds:02d}'
+
+
 def get_video_properties(filename):
     try:
         vinf = ffmpeg.probe(filename)
