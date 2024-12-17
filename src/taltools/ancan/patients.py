@@ -16,8 +16,9 @@ def str2date(date_str):
     return None
 
 
-def add_patient_info(df, cinf=None):
-    df['child_key'] = df['child_key'].astype(int)
+def add_patient_info(df, video_name_col, cinf=None):
+    df['child_key'] = df[video_name_col].apply(lambda v: v.split('_')[0]).astype(int)
+    df['assessment'] = df[video_name_col].apply(lambda v: '_'.join(v.split('_')[:-2]))
     if cinf is None:
         cinf = pd.read_csv(r'Z:\Users\TalBarami\241031_children_info.csv')
         cols = [0, 3, 4, 5]
