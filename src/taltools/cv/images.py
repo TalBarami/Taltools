@@ -18,8 +18,11 @@ def blur_area(frame, center, radius, kernel_size=(50, 50)):
 
 def fig2np(fig):
     fig.canvas.draw()
-    frame = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
-    frame = frame.reshape(fig.canvas.get_width_height()[::-1] + (3,))
+    renderer = fig.canvas.get_renderer()
+    raw_data = np.array(fig.canvas.buffer_rgba())
+    frame = raw_data[:, :, :3]
+    # frame = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
+    # frame = frame.reshape(fig.canvas.get_width_height()[::-1] + (3,))
     plt.close(fig)
     return cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
 
