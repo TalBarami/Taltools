@@ -1,11 +1,21 @@
 import numpy as np
 
 
-def xywh2xyxy(box):
-    if len(box.shape) == 1:
-        box = box.reshape(1, -1)
-    cx, cy, w, h = box[:, 0], box[:, 1], box[:, 2], box[:, 3]
-    return np.stack([cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2], axis=1)
+def xywh2xyxy(boxes):
+    boxes = np.asarray(boxes)
+    _1d = boxes.ndim == 1
+    if _1d:
+        boxes = boxes[np.newaxis, :]
+    cx, cy, w, h = boxes[..., 0], boxes[..., 1], boxes[..., 2], boxes[..., 3]
+    x1 = cx - w / 2
+    y1 = cy - h / 2
+    x2 = cx + w / 2
+    y2 = cy + h / 2
+    result = np.stack([x1, y1, x2, y2], axis=-1)
+    if _1d:
+        result = result[0]
+
+    return result
 
 def iou(box1, box2):
     x_min_inter = max(box1[0], box2[0])
