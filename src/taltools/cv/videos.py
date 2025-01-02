@@ -40,6 +40,8 @@ def fps2time(frame_num, fps):
 
 
 def get_video_properties(filename):
+    if not osp.exists(filename):
+        raise FileNotFoundError
     try:
         vinf = ffmpeg.probe(filename)
 
@@ -72,9 +74,12 @@ def get_video_properties(filename):
                     if not ret:
                         break
                     frame_count += 1
+            if fps == 0:
+                fps = 25
             length = frame_count / fps
         except Exception as e:
             raise e
         finally:
             cap.release()
+    resolution = [int(x) for x in resolution]
     return resolution, fps, frame_count, length

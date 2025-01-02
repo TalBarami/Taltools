@@ -25,9 +25,3 @@ def fig2np(fig):
     # frame = frame.reshape(fig.canvas.get_width_height()[::-1] + (3,))
     plt.close(fig)
     return cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-
-def fps2time(frame, fps):
-    x = frame / fps
-    min = int(x // 60)
-    sec = int(x % 60)
-    return f'{min:02d}:{sec:02d}'
