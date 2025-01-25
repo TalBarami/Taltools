@@ -1,5 +1,7 @@
 import pandas as pd
 import numpy as np
+from scipy.ndimage import gaussian_filter1d
+
 
 def divide_segments(_df, label_col):
     df = _df.copy().reset_index()
@@ -12,19 +14,24 @@ def divide_segments(_df, label_col):
     segments['length'] = segments['end_frame'] - segments['start_frame']
     return segments
 
-    # df['segment_change'] = df[label_col].ne(df[label_col].shift()).cumsum()
-    # positive_segments = df[df[label_col] != 0].reset_index()
-    #
-    # segments = (
-    #     positive_segments.groupby('segment_change')
-    #     .agg(start_frame=('index', 'first'), end_frame=('index', 'last'))
-    #     .reset_index(drop=True)
-    # )
-    # segments['length'] = segments['end_frame'] - segments['start_frame']
-    # segments['label'] = 1
-    # return segments
-
 def fill_index(df, _from, _to):
     _missing = pd.DataFrame(index=list(set(range(_from, _to + 1)) - set(df.index)))
     return pd.concat([df, _missing], axis=0).sort_index()
 
+def pd2np(df, columns, F, M):
+    frame_indices = df['frame'].values
+    person_indices = df['frame_offset'].values
+    arr = np.zeros((F, M, len(columns)))
+    vals = df[columns].to_numpy()
+    arr[frame_indices, person_indices, :] = vals
+    return arr
+
+def gaussian_smoothing(df, columns, sigma=2):
+    smoothed_df = df.copy()
+    for column in columns:
+        smoothed_df[column] = gaussian_filter1d(smoothed_df[column].values, sigma=sigma)
+    return smoothed_df
+
+def assign_color(df, label_col, cmap):
+    df[['r', 'g', 'b']] = np.array(df[label_col].map(cmap).tolist())
+    return df

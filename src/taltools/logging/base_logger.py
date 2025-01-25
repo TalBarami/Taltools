@@ -11,19 +11,19 @@ class BaseLogger(ABC):
         super(BaseLogger, self).__init__()
 
     @abstractmethod
-    def debug(self, msg: str):
+    def debug(self, msg: str, *args, **kwargs):
         pass
 
     @abstractmethod
-    def info(self, msg: str):
+    def info(self, msg: str, *args, **kwargs):
         pass
 
     @abstractmethod
-    def warning(self, msg: str):
+    def warning(self, msg: str, *args, **kwargs):
         pass
 
     @abstractmethod
-    def error(self, msg: str):
+    def error(self, msg: str, *args, **kwargs):
         pass
 
     @abstractmethod
@@ -52,21 +52,21 @@ class CompositeLogger(BaseLogger):
         super(CompositeLogger, self).__init__()
         self.loggers = loggers
 
-    def debug(self, msg: str):
+    def debug(self, msg: str, *args, **kwargs):
         for logger in self.loggers:
-            logger.debug(msg)
+            logger.debug(msg, *args, **kwargs)
 
-    def info(self, msg: str):
+    def info(self, msg: str, *args, **kwargs):
         for logger in self.loggers:
-            logger.info(msg)
+            logger.info(msg, *args, **kwargs)
 
-    def warning(self, msg: str):
+    def warning(self, msg: str, *args, **kwargs):
         for logger in self.loggers:
-            logger.warning(msg)
+            logger.warning(msg, *args, **kwargs)
 
-    def error(self, msg: str):
+    def error(self, msg: str, *args, **kwargs):
         for logger in self.loggers:
-            logger.error(msg)
+            logger.error(msg, *args, **kwargs)
 
     def log(self, name: str, data: Any, step=None):
         for logger in self.loggers:

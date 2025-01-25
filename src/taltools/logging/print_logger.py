@@ -23,17 +23,17 @@ class PrintLogger(BaseLogger):
         sh.setFormatter(self.formatter)
         self.logger.addHandler(sh)
 
-    def debug(self, msg: str):
-        self.logger.debug(msg)
+    def debug(self, msg: str, *args, **kwargs):
+        self.logger.debug(msg, *args, **kwargs)
 
-    def info(self, msg: str):
-        self.logger.info(msg)
+    def info(self, msg: str, *args, **kwargs):
+        self.logger.info(msg, *args, **kwargs)
 
-    def warning(self, msg: str):
-        self.logger.warning(msg)
+    def warning(self, msg: str, *args, **kwargs):
+        self.logger.warning(msg, *args, **kwargs)
 
-    def error(self, msg: str):
-        self.logger.error(msg)
+    def error(self, msg: str, *args, **kwargs):
+        self.logger.error(msg, *args, **kwargs)
 
     def log(self, name: str, data: Any, step=None):
         self.logger.info(f'{name}: {data}')

@@ -25,16 +25,16 @@ class NeptuneLogger(BaseLogger):
             capture_stderr=capture_stderr
         )
 
-    def debug(self, msg: str):
+    def debug(self, msg: str, *args, **kwargs):
         pass
 
-    def info(self, msg: str):
+    def info(self, msg: str, *args, **kwargs):
         pass
 
-    def warning(self, msg: str):
+    def warning(self, msg: str, *args, **kwargs):
         pass
 
-    def error(self, msg: str):
+    def error(self, msg: str, *args, **kwargs):
         pass
 
     def log(self, name: str, data, step=None):
