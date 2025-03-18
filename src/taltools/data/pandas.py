@@ -26,6 +26,36 @@ def pd2np(df, columns, F, M):
     arr[frame_indices, person_indices, :] = vals
     return arr
 
+
+def pd2latex(df, caption="My Table", label="tab:mytable"):
+    """
+    Converts a Pandas DataFrame to a LaTeX table string.
+
+    Parameters:
+    df (pd.DataFrame): The dataframe to convert.
+    caption (str): The caption for the table.
+    label (str): The label for referencing the table.
+
+    Returns:
+    str: A LaTeX table string.
+    """
+    latex_str = df.to_latex(index=False, column_format="|c" * (len(df.columns) + 1) + "|", escape=False)
+
+    latex_table = (
+            "\\begin{table}[ht]\n"
+            "\\centering\n"
+            f"\\caption{{{caption}}}\n"
+            f"\\label{{{label}}}\n"
+            "\\begin{tabular}{|l|" + "c|" * (len(df.columns) - 1) + "}\n"
+                                                                    "\\hline\n"
+            + latex_str +
+            "\\hline\n"
+            "\\end{tabular}\n"
+            "\\end{table}"
+    )
+
+    return latex_table
+
 def gaussian_smoothing(df, columns, sigma=2):
     smoothed_df = df.copy()
     for column in columns:
@@ -35,3 +65,4 @@ def gaussian_smoothing(df, columns, sigma=2):
 def assign_color(df, label_col, cmap):
     df[['r', 'g', 'b']] = np.array(df[label_col].map(cmap).tolist())
     return df
+
