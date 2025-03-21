@@ -59,7 +59,7 @@ def rotate_3d_landmarks(kp, pitch=0, roll=0, yaw=0):
     return (kp @ R.T)
 
 
-def plot_3d_landmarks(kp, pairs=None, elev=-120, azim=90, roll=180):
+def plot_3d_landmarks(kp, pairs=None, joint_indices=False, elev=-120, azim=90, roll=180):
     """
     Plots a set of 3D landmarks with object rotation and returns the image as a numpy array.
     :param kp: numpy array of shape (J, 3), where J is the number of landmarks.
@@ -73,6 +73,10 @@ def plot_3d_landmarks(kp, pairs=None, elev=-120, azim=90, roll=180):
 
     # Scatter plot of landmarks
     ax.scatter(kp[:, 0], kp[:, 1], kp[:, 2], c='b', marker='o')
+
+    if joint_indices:
+        for i, (x, y, z) in enumerate(kp):
+            ax.text(x, y, z, str(i), fontsize=8, color='black', ha='center', va='center')
 
     if pairs:
         for (i, j) in pairs:
