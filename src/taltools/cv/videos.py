@@ -41,7 +41,7 @@ def fps2time(frame_num, fps):
 
 def get_video_properties(filename):
     if not osp.exists(filename):
-        raise FileNotFoundError
+        raise FileNotFoundError(f"File not found: {filename}")
     try:
         vinf = ffmpeg.probe(filename)
 
