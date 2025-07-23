@@ -35,29 +35,6 @@ def video2img(video_path, out_path):
     cap.release()
 
 
-def concatenate_videos(video_list, output_filename):
-    """
-    Concatenates a list of video files into a single output video using ffmpeg.
-
-    Parameters:
-    - video_list: List of video file paths (in correct order).
-    - output_filename: Output file path (should end with .mp4 or desired extension).
-    """
-    # Create a temporary file list for ffmpeg
-    with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt') as f:
-        for video in video_list:
-            f.write(f"file '{video}'\n")
-        tmpfile = f.name
-    try:
-        # Run ffmpeg command to concatenate without re-encoding
-        cmd = [
-            'ffmpeg', '-f', 'concat', '-safe', '0',
-            '-i', tmpfile, '-c', 'copy', output_filename
-        ]
-        subprocess.run(cmd, check=True)
-    finally:
-        os.remove(tmpfile)
-
 def fps2time(frame_num, fps):
     x = frame_num / fps
     minutes = int(x // 60)
