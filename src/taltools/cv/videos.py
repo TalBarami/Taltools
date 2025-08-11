@@ -85,4 +85,4 @@ def get_video_properties(filename):
         finally:
             cap.release()
     resolution = [int(x) for x in resolution]
-    return resolution, fps, frame_count, length
+    return *resolution, fps, frame_count, length
