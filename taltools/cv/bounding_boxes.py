@@ -28,3 +28,32 @@ def iou(box1, box2):
     union_area = area_box1 + area_box2 - inter_area
     iou = inter_area / union_area if union_area > 0 else 0
     return iou
+
+def iou_matrix(boxes: np.ndarray) -> np.ndarray:
+    """
+    Vectorized IoU for a set of boxes in xyxy. Returns (N,N).
+    boxes: (N,4) with [x1,y1,x2,y2]
+    """
+    if boxes.size == 0:
+        return np.zeros((0, 0), dtype=float)
+
+    x1 = boxes[:, 0][:, None]
+    y1 = boxes[:, 1][:, None]
+    x2 = boxes[:, 2][:, None]
+    y2 = boxes[:, 3][:, None]
+
+    xx1 = np.maximum(x1, x1.T)
+    yy1 = np.maximum(y1, y1.T)
+    xx2 = np.minimum(x2, x2.T)
+    yy2 = np.minimum(y2, y2.T)
+
+    inter_w = np.clip(xx2 - xx1, 0.0, None)
+    inter_h = np.clip(yy2 - yy1, 0.0, None)
+    inter = inter_w * inter_h
+
+    area = np.clip((x2 - x1), 0.0, None) * np.clip((y2 - y1), 0.0, None)
+    union = area + area.T - inter
+    with np.errstate(divide='ignore', invalid='ignore'):
+        iou_mat = np.where(union > 0, inter / union, 0.0)
+    np.fill_diagonal(iou_mat, 0.0)  # don't self-suppress
+    return iou_mat

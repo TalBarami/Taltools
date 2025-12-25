@@ -43,6 +43,7 @@ def fps2time(frame_num, fps):
 
 
 def get_video_properties(filename):
+    mx_len = 25e4
     if not osp.exists(filename):
         raise FileNotFoundError(f"File not found: {filename}")
     try:
@@ -70,13 +71,15 @@ def get_video_properties(filename):
             resolution = cap.get(cv2.CAP_PROP_FRAME_WIDTH), cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
             fps = cap.get(cv2.CAP_PROP_FPS)
             frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            if frame_count > 6e5:
+            if frame_count > mx_len:
                 frame_count = 0
                 while True:
                     ret, _ = cap.read()
                     if not ret:
                         break
                     frame_count += 1
+                    if frame_count >= mx_len:
+                        raise ValueError(f"Unable to get video properties for video: {filename}")
             if fps == 0:
                 fps = 25
             length = frame_count / fps
