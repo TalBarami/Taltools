@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "taltools"
+version = "1.1.0"
+description = "Skeleton and CV utilities"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Tal Barami", email = "baramit@post.bgu.ac.il" }]
+requires-python = ">=3.8"
+dependencies = [
+    "numpy",
+    "opencv-python",
+    "matplotlib",
+    "pillow",
+    "ffmpeg-python",
+    "omegaconf",
+    "pandas",
+    "scipy",
+    "tabulate",
+    "torch",
+    "neptune",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["taltools*"]
