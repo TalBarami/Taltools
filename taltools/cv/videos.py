@@ -1,3 +1,4 @@
+import json
 import os
 import subprocess
 import tempfile
@@ -42,6 +43,27 @@ def fps2time(frame_num, fps):
     return f'{minutes:02d}:{seconds:02d}'
 
 
+def _ffprobe_fallback(filename):
+    result = subprocess.run([
+        'ffprobe', '-v', 'error',
+        '-select_streams', 'v:0',
+        '-count_packets',
+        '-show_entries', 'stream=width,height,r_frame_rate,duration',
+        '-of', 'json', filename
+    ], capture_output=True, text=True, timeout=30)
+    info = json.loads(result.stdout)
+    streams = info.get('streams', [])
+    if not streams:
+        raise ValueError(f"ffprobe found no video streams in: {filename}")
+    s = streams[0]
+    width = int(s['width'])
+    height = int(s['height'])
+    fps = eval(s['r_frame_rate'])
+    duration = float(s['duration'])
+    frame_count = round(duration * fps)
+    return width, height, fps, frame_count, duration
+
+
 def get_video_properties(filename):
     mx_len = 25e4
     if not osp.exists(filename):
@@ -66,6 +88,10 @@ def get_video_properties(filename):
         frame_candidates = [f for f in frame_candidates if np.abs(f - estimated_frame) < np.min((50, estimated_frame * 0.1))]
         frame_count = int(np.max(frame_candidates)) if len(frame_candidates) > 0 else int(np.ceil(length * fps)) if length and fps else None
     except Exception:
+        try:
+            return _ffprobe_fallback(filename)
+        except Exception:
+            pass
         try:
             cap = cv2.VideoCapture(filename)
             resolution = cap.get(cv2.CAP_PROP_FRAME_WIDTH), cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
