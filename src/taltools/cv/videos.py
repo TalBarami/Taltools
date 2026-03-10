@@ -59,8 +59,8 @@ def _ffprobe_fallback(filename):
     width = int(s['width'])
     height = int(s['height'])
     fps = eval(s['r_frame_rate'])
-    duration = float(s['duration'])
-    frame_count = round(duration * fps)
+    duration = float(s['duration']) if 'duration' in s else float('nan')
+    frame_count = round(duration * fps) if not np.isnan(duration) else float('nan')
     return width, height, fps, frame_count, duration
 
 
