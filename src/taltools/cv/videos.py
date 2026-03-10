@@ -50,7 +50,7 @@ def _ffprobe_fallback(filename):
         '-count_packets',
         '-show_entries', 'stream=width,height,r_frame_rate,duration',
         '-of', 'json', filename
-    ], capture_output=True, text=True, timeout=30)
+    ], capture_output=True, text=True, timeout=90)
     info = json.loads(result.stdout)
     streams = info.get('streams', [])
     if not streams:
