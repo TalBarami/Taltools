@@ -12,16 +12,23 @@ from taltools.logging.base_logger import BaseLogger
 
 class PrintLogger(BaseLogger):
     def __init__(self, name: str, show=False):
+        """
+        Args:
+            name: Logger name (typically ``__name__``).
+            show: If True, figures passed to :meth:`plot` are displayed inline.
+                  Has no effect on text logging methods.
+        """
         super().__init__()
         self.name = name
         self.show = show
         self.logger = logging.getLogger(name)
         self.logger.setLevel(logging.DEBUG)
         self.formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-        sh = logging.StreamHandler()
-        sh.setLevel(logging.DEBUG)
-        sh.setFormatter(self.formatter)
-        self.logger.addHandler(sh)
+        if not self.logger.handlers:
+            sh = logging.StreamHandler()
+            sh.setLevel(logging.DEBUG)
+            sh.setFormatter(self.formatter)
+            self.logger.addHandler(sh)
 
     def debug(self, msg: str, *args, **kwargs):
         self.logger.debug(msg, *args, **kwargs)
@@ -36,6 +43,7 @@ class PrintLogger(BaseLogger):
         self.logger.error(msg, *args, **kwargs)
 
     def log(self, name: str, data: Any, step=None):
+        # step is ignored by PrintLogger; included for interface compatibility.
         self.logger.info(f'{name}: {data}')
 
     def log_dict(self, name: str, data: Dict[str, Any], step=None):
