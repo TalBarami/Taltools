@@ -1,5 +1,9 @@
 import cv2
-from torch.utils.data import IterableDataset
+
+try:
+    from torch.utils.data import IterableDataset
+except ImportError as e:
+    raise ImportError("Install taltools[torch] to use IterableVideoDataset") from e
 
 
 class IterableVideoDataset(IterableDataset):

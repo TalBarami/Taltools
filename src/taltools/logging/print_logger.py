@@ -4,7 +4,10 @@ from typing import Any, Dict
 
 from matplotlib.figure import Figure
 from pandas import DataFrame
-from tabulate import tabulate
+try:
+    from tabulate import tabulate
+except ImportError as e:
+    raise ImportError("Install taltools[logging] to use log_table") from e
 
 from taltools.io.files import init_directories
 from taltools.logging.base_logger import BaseLogger
