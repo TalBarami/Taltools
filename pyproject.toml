@@ -15,13 +15,15 @@ dependencies = [
     "matplotlib",
     "pillow",
     "ffmpeg-python",
-    "omegaconf",
     "pandas",
-    "scipy",
-    "tabulate",
-    "torch",
-    "neptune",
 ]
+
+[project.optional-dependencies]
+torch   = ["torch"]
+neptune = ["neptune"]
+data    = ["scipy", "omegaconf"]
+logging = ["tabulate"]
+all     = ["torch", "neptune", "scipy", "omegaconf", "tabulate"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/taltools"]

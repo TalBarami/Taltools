@@ -2,9 +2,12 @@ from os import path as osp
 from pathlib import Path
 from typing import Any, Dict
 
-import neptune
+try:
+    import neptune
+    from neptune.types import File
+except ImportError as e:
+    raise ImportError("Install taltools[neptune] to use NeptuneLogger") from e
 from matplotlib.figure import Figure
-from neptune.types import File
 from pandas import DataFrame
 
 from taltools.logging.base_logger import BaseLogger
