@@ -1,9 +1,6 @@
 import pandas as pd
 import numpy as np
-try:
-    from scipy.ndimage import gaussian_filter1d
-except ImportError as e:
-    raise ImportError("Install taltools[data] to use gaussian smoothing") from e
+from scipy.ndimage import gaussian_filter1d
 
 
 def divide_segments(_df, label_col):

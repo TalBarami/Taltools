@@ -1,7 +1,4 @@
-try:
-    from omegaconf import OmegaConf
-except ImportError as e:
-    raise ImportError("Install taltools[data] to use configurations") from e
+from omegaconf import OmegaConf
 
 def save_config(config, out):
     with open(out.replace('\\', '/'), 'w') as fp:

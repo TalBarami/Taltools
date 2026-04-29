@@ -19,13 +19,13 @@ dependencies = [
     "tables",
     "tabulate",
     "omegaconf",
+    "scipy",
 ]
 
 [project.optional-dependencies]
 torch   = ["torch"]
 neptune = ["neptune"]
-data    = ["scipy"]
-all     = ["torch", "neptune", "scipy"]
+all     = ["torch", "neptune"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/taltools"]
