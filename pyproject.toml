@@ -16,14 +16,16 @@ dependencies = [
     "pillow",
     "ffmpeg-python",
     "pandas",
+    "tables",
+    "tabulate",
+    "omegaconf",
 ]
 
 [project.optional-dependencies]
 torch   = ["torch"]
 neptune = ["neptune"]
-data    = ["scipy", "omegaconf"]
-logging = ["tabulate"]
-all     = ["torch", "neptune", "scipy", "omegaconf", "tabulate"]
+data    = ["scipy"]
+all     = ["torch", "neptune", "scipy"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/taltools"]
