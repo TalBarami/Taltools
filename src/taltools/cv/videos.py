@@ -9,6 +9,10 @@ import cv2
 import ffmpeg
 
 from taltools.io.files import init_directories
+from taltools.logging import PrintLogger
+
+MAX_DURATION = 2.5 * 3600  # ~2.5h in seconds; longer videos are treated as bugged/irrelevant
+logger = PrintLogger(__name__)
 
 
 def take_subclip(video_path, start_time, end_time, fps, out_path):
@@ -64,54 +68,68 @@ def _ffprobe_fallback(filename):
     return width, height, fps, frame_count, duration
 
 
+def _ffmpeg_probe(filename):
+    vinf = ffmpeg.probe(filename)
+    streams = vinf['streams']
+
+    resolution_candidates = [(s['width'], s['height']) for s in streams if 'width' in s and 'height' in s]
+    fps_candidates = [s['avg_frame_rate'] for s in streams if 'avg_frame_rate' in s] + \
+                     [s['r_frame_rate'] for s in streams if 'r_frame_rate' in s]
+    fps_candidates = [x for x in fps_candidates if x != '0/0']
+
+    resolution = resolution_candidates[0] if len(resolution_candidates) > 0 else None
+    fps = eval(fps_candidates[0]) if len(fps_candidates) > 0 else None
+
+    length_candidates = [s['duration'] for s in streams if 'duration' in s]
+    if 'format' in vinf and 'duration' in vinf['format']:
+        length_candidates.append(vinf['format']['duration'])
+    length = eval(length_candidates[0]) if len(length_candidates) > 0 else None
+
+    estimated_frame = length * fps if (length is not None and fps is not None) else None
+    frame_candidates = [eval(s['nb_frames']) for s in streams if 'nb_frames' in s]
+    if estimated_frame is not None:
+        frame_candidates = [f for f in frame_candidates if np.abs(f - estimated_frame) < np.min((50, estimated_frame * 0.1))]
+    else:
+        frame_candidates = []
+    frame_count = int(np.max(frame_candidates)) if len(frame_candidates) > 0 else int(np.ceil(length * fps)) if length and fps else None
+
+    if resolution is None:
+        raise ValueError(f"ffmpeg.probe found no resolution for: {filename}")
+    width, height = resolution
+    return width, height, fps, frame_count, length
+
+
+def _cv2_fallback(filename):
+    cap = cv2.VideoCapture(filename)
+    try:
+        width = cap.get(cv2.CAP_PROP_FRAME_WIDTH)
+        height = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
+        fps = cap.get(cv2.CAP_PROP_FPS) or 25
+        frame_count = 0
+        while True:
+            ret, _ = cap.read()
+            if not ret:
+                break
+            frame_count += 1
+            if frame_count / fps > MAX_DURATION:
+                raise ValueError(f"Video exceeds maximum duration ({MAX_DURATION}s): {filename}")
+        length = frame_count / fps
+        return width, height, fps, frame_count, length
+    finally:
+        cap.release()
+
+
 def get_video_properties(filename):
-    mx_len = 25e4
     if not osp.exists(filename):
         raise FileNotFoundError(f"File not found: {filename}")
-    try:
-        vinf = ffmpeg.probe(filename)
-
-        resolution_candidates = [(vinf['streams'][i]['width'], vinf['streams'][i]['height']) for i in range(len(vinf['streams'])) if 'width' in vinf['streams'][i].keys() and 'height' in vinf['streams'][i].keys()]
-        fps_candidates = [vinf['streams'][i]['avg_frame_rate'] for i in range(len(vinf['streams'])) if 'avg_frame_rate' in vinf['streams'][i].keys()] + \
-                         [vinf['streams'][i]['r_frame_rate'] for i in range(len(vinf['streams'])) if 'r_frame_rate' in vinf['streams'][i].keys()]
-        fps_candidates = [x for x in fps_candidates if x != '0/0']
-
-        resolution = resolution_candidates[0] if len(resolution_candidates) > 0 else None
-        fps = eval(fps_candidates[0]) if len(fps_candidates) > 0 else None
-        length_candidates = [vinf['streams'][i]['duration'] for i in range(len(vinf['streams'])) if 'duration' in vinf['streams'][i].keys()]
-        if 'format' in vinf.keys() and 'duration' in vinf['format'].keys():
-            length_candidates.append(vinf['format']['duration'])
-        length = eval(length_candidates[0]) if len(length_candidates) > 0 else None
-        if length is not None and fps is not None:
-            estimated_frame = length * fps
-        frame_candidates = [eval(vinf['streams'][i]['nb_frames']) for i in range(len(vinf['streams'])) if 'nb_frames' in vinf['streams'][i].keys()]
-        frame_candidates = [f for f in frame_candidates if np.abs(f - estimated_frame) < np.min((50, estimated_frame * 0.1))]
-        frame_count = int(np.max(frame_candidates)) if len(frame_candidates) > 0 else int(np.ceil(length * fps)) if length and fps else None
-    except Exception:
+    errors = []
+    for strategy in (_ffmpeg_probe, _ffprobe_fallback, _cv2_fallback):
         try:
-            return _ffprobe_fallback(filename)
-        except Exception:
-            pass
-        try:
-            cap = cv2.VideoCapture(filename)
-            resolution = cap.get(cv2.CAP_PROP_FRAME_WIDTH), cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
-            fps = cap.get(cv2.CAP_PROP_FPS)
-            frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            if frame_count > mx_len:
-                frame_count = 0
-                while True:
-                    ret, _ = cap.read()
-                    if not ret:
-                        break
-                    frame_count += 1
-                    if frame_count >= mx_len:
-                        raise ValueError(f"Unable to get video properties for video: {filename}")
-            if fps == 0:
-                fps = 25
-            length = frame_count / fps
+            width, height, fps, frame_count, length = strategy(filename)
+            if length is not None and length > MAX_DURATION:
+                raise ValueError(f"Video exceeds maximum duration ({MAX_DURATION}s): length={length}")
+            return int(width), int(height), fps, frame_count, length
         except Exception as e:
-            raise e
-        finally:
-            cap.release()
-    resolution = [int(x) for x in resolution]
-    return *resolution, fps, frame_count, length
+            logger.warning(f"{strategy.__name__} failed for {filename}: {e}")
+            errors.append((strategy.__name__, e))
+    raise RuntimeError(f"Unable to get video properties for {filename}. Attempts: {errors}")
