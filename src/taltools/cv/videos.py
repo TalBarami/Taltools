@@ -1,7 +1,10 @@
 import json
 import os
+import shutil
 import subprocess
+import sys
 import tempfile
+from functools import lru_cache
 from os import path as osp
 
 import numpy as np
@@ -14,6 +17,101 @@ from taltools.logging import PrintLogger
 MAX_DURATION = 2.5 * 3600  # ~2.5h in seconds; longer videos are treated as bugged/irrelevant
 logger = PrintLogger(__name__)
 
+# Env-var override names checked first by resolve_binary, e.g. FFPROBE_BINARY / FFMPEG_BINARY.
+_BINARY_ENV_VARS = {
+    'ffprobe': 'FFPROBE_BINARY',
+    'ffmpeg': 'FFMPEG_BINARY',
+}
+
+
+def _sys_prefix_candidates(name):
+    """Locations of `name` inside the active conda/venv (sys.prefix), per-OS."""
+    if os.name == 'nt':  # Windows
+        exe = name + '.exe'
+        return [
+            osp.join(sys.prefix, 'Scripts', exe),
+            osp.join(sys.prefix, 'Library', 'bin', exe),  # conda's ffmpeg/ffprobe live here
+            osp.join(sys.prefix, exe),
+        ]
+    return [osp.join(sys.prefix, 'bin', name)]  # POSIX (Linux/HPC, macOS)
+
+
+@lru_cache(maxsize=None)
+def resolve_binary(name):
+    """
+    Resolve an absolute path to `name` ('ffprobe' or 'ffmpeg'), robust across
+    environments. Priority:
+      1. Explicit env-var override (FFPROBE_BINARY / FFMPEG_BINARY, generic
+         <NAME>_BINARY otherwise).
+      2. The active conda/venv via sys.prefix. This is the key fix for clusters
+         where the env's bin dir is not on the subprocess PATH even though the
+         binary is installed in the active env.
+      3. shutil.which(name) on PATH.
+      4. Bare name as a last resort (the downstream call raises a clear error).
+    Result is cached per name; call resolve_binary.cache_clear() if env changes.
+    """
+    env_var = _BINARY_ENV_VARS.get(name, f'{name.upper()}_BINARY')
+    override = os.environ.get(env_var)
+    if override:
+        if osp.isfile(override) and os.access(override, os.X_OK):
+            logger.debug(f"resolve_binary({name}): using env override {env_var}={override}")
+            return override
+        logger.warning(f"resolve_binary({name}): {env_var}={override} is not an executable file; ignoring")
+
+    for candidate in _sys_prefix_candidates(name):
+        if osp.isfile(candidate) and os.access(candidate, os.X_OK):
+            logger.debug(f"resolve_binary({name}): found in sys.prefix at {candidate}")
+            return candidate
+
+    found = shutil.which(name)
+    if found:
+        logger.debug(f"resolve_binary({name}): found on PATH at {found}")
+        return found
+
+    logger.warning(f"resolve_binary({name}): not found via override/sys.prefix/PATH; falling back to bare '{name}'")
+    return name
+
+
+def _parse_rational(value):
+    """
+    Parse ffprobe rate strings like '30000/1001', '25/1', '25', '0/0', 'N/A'.
+    Returns a positive float, or None if not parseable / non-positive.
+    """
+    if value is None:
+        return None
+    value = str(value).strip()
+    if value in ('', 'N/A', '0/0'):
+        return None
+    try:
+        if '/' in value:
+            num, den = value.split('/', 1)
+            num, den = float(num), float(den)
+            if den == 0:
+                return None
+            result = num / den
+        else:
+            result = float(value)
+    except (ValueError, ZeroDivisionError):
+        return None
+    return result if result > 0 else None
+
+
+def _parse_float(value):
+    """
+    Parse a numeric metadata field. Returns a non-negative float, or None for
+    None / 'N/A' / '' / unparseable / negative sentinels (e.g. nb_frames=-1).
+    """
+    if value is None:
+        return None
+    value = str(value).strip()
+    if value in ('', 'N/A'):
+        return None
+    try:
+        result = float(value)
+    except ValueError:
+        return None
+    return result if result >= 0 else None
+
 
 def take_subclip(video_path, start_time, end_time, fps, out_path):
     ffmpeg.input(video_path).video \
@@ -21,7 +119,7 @@ def take_subclip(video_path, start_time, end_time, fps, out_path):
         .setpts('PTS-STARTPTS') \
         .filter('fps', fps=fps, round='up') \
         .output(out_path) \
-        .run()
+        .run(cmd=resolve_binary('ffmpeg'))
 
 
 def video2img(video_path, out_path):
@@ -47,56 +145,79 @@ def fps2time(frame_num, fps):
     return f'{minutes:02d}:{seconds:02d}'
 
 
+def _ffmpeg_probe(filename):
+    """Fast header read via ffmpeg-python. Handles healthy files (common case)."""
+    vinf = ffmpeg.probe(filename, cmd=resolve_binary('ffprobe'))
+    video_streams = [s for s in vinf.get('streams', []) if s.get('codec_type') == 'video']
+    if not video_streams:
+        raise ValueError(f"ffmpeg.probe found no video stream for: {filename}")
+    s = video_streams[0]
+    if 'width' not in s or 'height' not in s:
+        raise ValueError(f"ffmpeg.probe found no resolution for: {filename}")
+    width, height = int(s['width']), int(s['height'])
+
+    fps = _parse_rational(s.get('avg_frame_rate')) or _parse_rational(s.get('r_frame_rate'))
+    # Duration: prefer the video stream's, fall back to the container's (mp4 often stores it there).
+    length = _parse_float(s.get('duration')) or _parse_float(vinf.get('format', {}).get('duration'))
+    nb = _parse_float(s.get('nb_frames'))
+    frame_count = int(nb) if nb else (int(np.ceil(length * fps)) if length and fps else None)
+
+    return width, height, fps, frame_count, length
+
+
 def _ffprobe_fallback(filename):
+    """Fast header read via the ffprobe binary directly (no decoding)."""
     result = subprocess.run([
-        'ffprobe', '-v', 'error',
+        resolve_binary('ffprobe'), '-v', 'error',
         '-select_streams', 'v:0',
-        '-count_packets',
-        '-show_entries', 'stream=width,height,r_frame_rate,duration',
+        '-show_entries', 'stream=width,height,r_frame_rate,avg_frame_rate,nb_frames,duration',
         '-of', 'json', filename
     ], capture_output=True, text=True, timeout=90)
-    info = json.loads(result.stdout)
+    info = json.loads(result.stdout or '{}')
     streams = info.get('streams', [])
     if not streams:
         raise ValueError(f"ffprobe found no video streams in: {filename}")
     s = streams[0]
-    width = int(s['width'])
-    height = int(s['height'])
-    fps = eval(s['r_frame_rate'])
-    duration = float(s['duration'])
-    frame_count = round(duration * fps)
+    if 'width' not in s or 'height' not in s:
+        raise ValueError(f"ffprobe found no resolution in: {filename}")
+    width, height = int(s['width']), int(s['height'])
+    fps = _parse_rational(s.get('avg_frame_rate')) or _parse_rational(s.get('r_frame_rate'))
+    duration = _parse_float(s.get('duration'))
+    nb = _parse_float(s.get('nb_frames'))
+    frame_count = int(nb) if nb else (round(duration * fps) if duration and fps else None)
     return width, height, fps, frame_count, duration
 
 
-def _ffmpeg_probe(filename):
-    vinf = ffmpeg.probe(filename)
-    streams = vinf['streams']
-
-    resolution_candidates = [(s['width'], s['height']) for s in streams if 'width' in s and 'height' in s]
-    fps_candidates = [s['avg_frame_rate'] for s in streams if 'avg_frame_rate' in s] + \
-                     [s['r_frame_rate'] for s in streams if 'r_frame_rate' in s]
-    fps_candidates = [x for x in fps_candidates if x != '0/0']
-
-    resolution = resolution_candidates[0] if len(resolution_candidates) > 0 else None
-    fps = eval(fps_candidates[0]) if len(fps_candidates) > 0 else None
-
-    length_candidates = [s['duration'] for s in streams if 'duration' in s]
-    if 'format' in vinf and 'duration' in vinf['format']:
-        length_candidates.append(vinf['format']['duration'])
-    length = eval(length_candidates[0]) if len(length_candidates) > 0 else None
-
-    estimated_frame = length * fps if (length is not None and fps is not None) else None
-    frame_candidates = [eval(s['nb_frames']) for s in streams if 'nb_frames' in s]
-    if estimated_frame is not None:
-        frame_candidates = [f for f in frame_candidates if np.abs(f - estimated_frame) < np.min((50, estimated_frame * 0.1))]
-    else:
-        frame_candidates = []
-    frame_count = int(np.max(frame_candidates)) if len(frame_candidates) > 0 else int(np.ceil(length * fps)) if length and fps else None
-
-    if resolution is None:
-        raise ValueError(f"ffmpeg.probe found no resolution for: {filename}")
-    width, height = resolution
-    return width, height, fps, frame_count, length
+def _ffprobe_count(filename):
+    """
+    Damaged-header recovery: count packets and derive duration from
+    frame_count / fps when the header lacks it. Demux-only, so far cheaper than
+    a cv2 full decode but slower than a header read.
+    """
+    result = subprocess.run([
+        resolve_binary('ffprobe'), '-v', 'error',
+        '-select_streams', 'v:0',
+        '-count_packets',
+        '-show_entries', 'stream=width,height,r_frame_rate,avg_frame_rate,nb_read_packets,duration',
+        '-of', 'json', filename
+    ], capture_output=True, text=True, timeout=600)
+    info = json.loads(result.stdout or '{}')
+    streams = info.get('streams', [])
+    if not streams:
+        raise ValueError(f"ffprobe(-count_packets) found no video streams in: {filename}")
+    s = streams[0]
+    if 'width' not in s or 'height' not in s:
+        raise ValueError(f"ffprobe(-count_packets) found no resolution in: {filename}")
+    width, height = int(s['width']), int(s['height'])
+    fps = _parse_rational(s.get('r_frame_rate')) or _parse_rational(s.get('avg_frame_rate'))
+    frame_count = _parse_float(s.get('nb_read_packets'))
+    frame_count = int(frame_count) if frame_count else None
+    duration = _parse_float(s.get('duration'))
+    if duration is None and frame_count and fps:
+        duration = frame_count / fps
+    if frame_count is None and duration and fps:
+        frame_count = round(duration * fps)
+    return width, height, fps, frame_count, duration
 
 
 def _cv2_fallback(filename):
@@ -114,21 +235,31 @@ def _cv2_fallback(filename):
             if frame_count / fps > MAX_DURATION:
                 raise ValueError(f"Video exceeds maximum duration ({MAX_DURATION}s): {filename}")
         length = frame_count / fps
-        return width, height, fps, frame_count, length
+        return int(width), int(height), fps, frame_count, length
     finally:
         cap.release()
+
+
+def _is_plausible(width, height, fps, frame_count, length):
+    return bool(width and height and fps and frame_count and length
+                and width > 0 and height > 0 and fps > 0 and frame_count > 0 and length > 0)
 
 
 def get_video_properties(filename):
     if not osp.exists(filename):
         raise FileNotFoundError(f"File not found: {filename}")
     errors = []
-    for strategy in (_ffmpeg_probe, _ffprobe_fallback, _cv2_fallback):
+    # Ordered cheapest/most-informative first, slowest/most-robust last.
+    for strategy in (_ffmpeg_probe, _ffprobe_fallback, _ffprobe_count, _cv2_fallback):
         try:
             width, height, fps, frame_count, length = strategy(filename)
             if length is not None and length > MAX_DURATION:
                 raise ValueError(f"Video exceeds maximum duration ({MAX_DURATION}s): length={length}")
-            return int(width), int(height), fps, frame_count, length
+            if not _is_plausible(width, height, fps, frame_count, length):
+                raise ValueError(
+                    f"implausible result (w={width}, h={height}, fps={fps}, "
+                    f"frames={frame_count}, len={length})")
+            return int(width), int(height), float(fps), int(frame_count), float(length)
         except Exception as e:
             logger.warning(f"{strategy.__name__} failed for {filename}: {e}")
             errors.append((strategy.__name__, e))
