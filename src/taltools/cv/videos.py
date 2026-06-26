@@ -14,7 +14,13 @@ import ffmpeg
 from taltools.io.files import init_directories
 from taltools.logging import PrintLogger
 
-MAX_DURATION = 2.5 * 3600  # ~2.5h in seconds; longer videos are treated as bugged/irrelevant
+
+MAX_DURATION = 3 * 3600  # ~3h in seconds; longer videos are treated as bugged/irrelevant
+# Relative gap between the header's nominal fps and the effective fps
+# (frame_count / duration) beyond which we warn. Clinical captures routinely
+# label a nominal 25/1 while actually running at ~25.03 fps; that ~0.13% drift is
+# enough to misplace late-video annotations by several frames.
+_FPS_REL_TOLERANCE = 0.005
 logger = PrintLogger(__name__)
 
 # Env-var override names checked first by resolve_binary, e.g. FFPROBE_BINARY / FFMPEG_BINARY.
@@ -243,13 +249,6 @@ def _cv2_fallback(filename):
 def _is_plausible(width, height, fps, frame_count, length):
     return bool(width and height and fps and frame_count and length
                 and width > 0 and height > 0 and fps > 0 and frame_count > 0 and length > 0)
-
-
-# Relative gap between the header's nominal fps and the effective fps
-# (frame_count / duration) beyond which we warn. Clinical captures routinely
-# label a nominal 25/1 while actually running at ~25.03 fps; that ~0.13% drift is
-# enough to misplace late-video annotations by several frames.
-_FPS_REL_TOLERANCE = 0.0005
 
 
 def _header_meta(filename):
