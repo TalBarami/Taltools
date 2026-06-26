@@ -274,82 +274,179 @@ def _header_meta(filename):
     raise RuntimeError(f"header read failed for {filename}: {last_err}")
 
 
-def get_video_properties(filename):
-    """Probe a video, composing each field from its most trustworthy source.
+# Ordered schema of the per-video metadata dict returned by get_video_properties.
+# Persisted (e.g. as NADI's extended videos table) and reused for column ordering.
+CANONICAL_COLUMNS = [
+    'basename', 'video_path', 'width', 'height',
+    'avg_frame_rate', 'r_frame_rate', 'nominal_fps',
+    'nb_frames_header', 'nb_read_packets', 'cv2_decoded',
+    'duration', 'effective_fps', 'fps_delta',
+    'header_count_mismatch', 'fps_mismatch', 'flagged', 'error',
+    'n_pts', 'first_pts', 'last_pts', 'pts_span', 'fps_pts',
+    'duration_pts', 'duration_vs_pts_delta', 'fps_pts_confirms_effective',
+]
 
-    - width/height/duration/nominal_fps: cheap header read.
-    - frame_count: packet count (nb_read_packets) — the only header-derived
-      count we trust; full cv2 decode as a last resort.
-    - fps: effective rate = frame_count / duration, falling back to the header's
-      nominal fps only when duration is unavailable.
 
-    This intentionally always demuxes (one -count_packets pass) rather than
-    returning the first "plausible" header result, because a header missing
-    nb_frames yields a plausible-but-wrong frame_count (duration * nominal_fps)
-    that would otherwise win and skip the accurate path.
+def _probe_full(filename):
+    """Single ffprobe pass: header fields AND the demuxed packet count.
+
+    Returns a dict of raw fields (numeric values None when absent/unparseable).
+    Raises if there is no video stream or no resolution.
     """
-    if not osp.exists(filename):
-        raise FileNotFoundError(f"File not found: {filename}")
+    result = subprocess.run([
+        resolve_binary('ffprobe'), '-v', 'error',
+        '-select_streams', 'v:0',
+        '-count_packets',
+        '-show_entries',
+        'stream=width,height,r_frame_rate,avg_frame_rate,nb_frames,nb_read_packets,duration'
+        ':format=duration',
+        '-of', 'json', filename,
+    ], capture_output=True, text=True, timeout=MAX_DURATION)
+    info = json.loads(result.stdout or '{}')
+    streams = info.get('streams', [])
+    if not streams:
+        raise ValueError(f"ffprobe(-count_packets) found no video streams in: {filename}")
+    s = streams[0]
+    fmt = info.get('format', {})
+    if 'width' not in s or 'height' not in s:
+        raise ValueError(f"ffprobe(-count_packets) found no resolution in: {filename}")
 
-    width = height = nominal_fps = duration = None
+    nb_frames = _parse_float(s.get('nb_frames'))
+    packets = _parse_float(s.get('nb_read_packets'))
+    return {
+        'width': int(s['width']),
+        'height': int(s['height']),
+        'avg_frame_rate': _parse_rational(s.get('avg_frame_rate')),
+        'r_frame_rate': _parse_rational(s.get('r_frame_rate')),
+        'nb_frames_header': int(nb_frames) if nb_frames else None,
+        'nb_read_packets': int(packets) if packets else None,
+        'duration': _parse_float(s.get('duration')) or _parse_float(fmt.get('duration')),
+    }
 
-    # 1. Cheap header read — trust only width/height/duration/nominal_fps.
+
+def _probe_pts(filename):
+    """Demux packet presentation timestamps and derive fps directly from frame
+    spacing — independent of both the header `duration` field and the nominal
+    rate. Demux-only (no pixel decode). Returns a dict; fps_pts is None when
+    fewer than 2 usable timestamps are found.
+    """
+    result = subprocess.run([
+        resolve_binary('ffprobe'), '-v', 'error',
+        '-select_streams', 'v:0',
+        '-show_entries', 'packet=pts_time',
+        '-of', 'csv=p=0', filename,
+    ], capture_output=True, text=True, timeout=MAX_DURATION)
+
+    pts = []
+    for line in result.stdout.splitlines():
+        v = _parse_float(line.strip().rstrip(','))  # csv may emit a trailing comma
+        if v is not None:
+            pts.append(v)
+
+    if len(pts) < 2:
+        return {'n_pts': len(pts), 'first_pts': None, 'last_pts': None,
+                'pts_span': None, 'fps_pts': None}
+
+    first_pts, last_pts = min(pts), max(pts)
+    span = last_pts - first_pts
+    # N timestamps span (N-1) inter-frame intervals.
+    fps_pts = (len(pts) - 1) / span if span > 0 else None
+    return {'n_pts': len(pts), 'first_pts': first_pts, 'last_pts': last_pts,
+            'pts_span': span, 'fps_pts': fps_pts}
+
+
+def _empty_row(filename):
+    """A CANONICAL_COLUMNS dict with everything NaN, identity fields filled."""
+    row = {c: np.nan for c in CANONICAL_COLUMNS}
+    row['basename'] = osp.splitext(osp.basename(filename))[0]
+    row['video_path'] = filename
+    return row
+
+
+def get_video_properties(filename, *, validate_decode=False):
+    """Probe a video and return the full per-video metadata dict.
+
+    Keys are :data:`CANONICAL_COLUMNS`. Missing values are ``np.nan``; the boolean
+    flags are Python bools; ``error`` is ``np.nan`` when none. The function never
+    raises — any failure is captured into ``error`` and a partial row returned, so
+    one call yields exactly one row for a whole-database metadata table.
+
+    Fields are raw measurements (no fabrication):
+      - frame count is the demuxed packet count (``nb_read_packets``);
+      - ``effective_fps`` is strictly ``nb_read_packets / duration``;
+      - the PTS cross-check (``fps_pts`` and the ``duration_*`` / confirms columns)
+        always runs, deriving fps straight from frame timestamps;
+      - ``cv2_decoded`` is filled only when ``validate_decode`` is True or the
+        packet count is unavailable (full-decode recovery) — decoding is otherwise
+        skipped as too expensive.
+
+    Callers that need the legacy ``(width, height, fps, frame_count, length)``
+    tuple should compose it from this dict (frame_count = ``nb_read_packets`` else
+    ``cv2_decoded``; fps = frame_count / duration).
+    """
+    row = _empty_row(filename)
     try:
-        width, height, nominal_fps, duration = _header_meta(filename)
+        if not osp.exists(filename):
+            raise FileNotFoundError(f"File not found: {filename}")
+
+        # 1. Header + packet count (one demux pass).
+        row.update(_probe_full(filename))
+
+        nominal_fps = row['avg_frame_rate'] or row['r_frame_rate']
+        row['nominal_fps'] = nominal_fps if nominal_fps else np.nan
+        packets, duration = row['nb_read_packets'], row['duration']
+        effective_fps = (packets / duration) if (packets and duration and duration > 0) else None
+        row['effective_fps'] = effective_fps if effective_fps is not None else np.nan
+        row['fps_delta'] = (effective_fps - nominal_fps) \
+            if (effective_fps is not None and nominal_fps) else np.nan
+
+        row['header_count_mismatch'] = bool(
+            row['nb_frames_header'] is not None
+            and not (isinstance(row['nb_frames_header'], float) and np.isnan(row['nb_frames_header']))
+            and packets is not None and int(row['nb_frames_header']) != packets)
+        row['fps_mismatch'] = bool(
+            effective_fps is not None and nominal_fps
+            and abs(effective_fps - nominal_fps) / nominal_fps > _FPS_REL_TOLERANCE)
+        row['flagged'] = bool(
+            row['nb_frames_header'] is None
+            or (isinstance(row['nb_frames_header'], float) and np.isnan(row['nb_frames_header']))
+            or row['header_count_mismatch'] or row['fps_mismatch'])
+
+        # 2. MAX_DURATION short-circuit: record, flag via error, skip PTS/cv2.
+        if duration is not None and duration > MAX_DURATION:
+            row['error'] = f"Video exceeds maximum duration ({MAX_DURATION}s): length={duration}"
+            return row
+
+        # 3. PTS cross-check (always).
+        row.update(_probe_pts(filename))
+        fps_pts, n_pts, span = row['fps_pts'], row['n_pts'], row['pts_span']
+        if fps_pts is not None and n_pts and n_pts > 1 and span:
+            duration_pts = span * n_pts / (n_pts - 1)
+            row['duration_pts'] = duration_pts
+            if duration is not None:
+                row['duration_vs_pts_delta'] = duration - duration_pts
+            if effective_fps is not None and nominal_fps:
+                row['fps_pts_confirms_effective'] = bool(
+                    abs(fps_pts - effective_fps) < abs(fps_pts - nominal_fps))
+
+        # 4. cv2 decode: only on request or as packet-count recovery.
+        if validate_decode or packets is None:
+            try:
+                _w, _h, _fps, decoded, _len = _cv2_fallback(filename)
+                row['cv2_decoded'] = decoded
+                if not row['width']:
+                    row['width'] = _w
+                if not row['height']:
+                    row['height'] = _h
+            except Exception as e:
+                row['error'] = str(e)
+
     except Exception as e:
-        logger.warning(f"_header_meta failed for {filename}: {e}")
+        row['error'] = str(e)
+        logger.warning(f"get_video_properties failed for {filename}: {e}")
 
-    # 2. Authoritative frame count via packet demux (also backfills any header
-    #    field that was missing above).
-    frame_count = None
-    try:
-        cw, ch, cfps, frame_count, cdur = _ffprobe_count(filename)
-        width = width or cw
-        height = height or ch
-        nominal_fps = nominal_fps or cfps
-        duration = duration or cdur
-    except Exception as e:
-        logger.warning(f"_ffprobe_count failed for {filename}: {e}")
-
-    # 3. Last resort: full decode (recovers count and resolution when both
-    #    header and packet probes failed).
-    if frame_count is None or not width or not height:
-        try:
-            dw, dh, dfps, frame_count, ddur = _cv2_fallback(filename)
-            width = width or dw
-            height = height or dh
-            nominal_fps = nominal_fps or dfps
-            # cv2's duration is frame_count / nominal_fps (i.e. wrong when the
-            # nominal fps is wrong) — only adopt it if we have nothing better.
-            duration = duration or ddur
-        except Exception as e:
-            logger.warning(f"_cv2_fallback failed for {filename}: {e}")
-
-    if frame_count is None:
-        raise RuntimeError(f"Unable to determine frame count for {filename}")
-
-    # 4. Effective fps = frame_count / duration; fall back to nominal fps and, if
-    #    needed, reconstruct duration from it.
-    if duration and duration > 0:
-        fps = frame_count / duration
-    else:
-        fps = nominal_fps
-        if fps and fps > 0:
-            duration = frame_count / fps
-
-    # 5. Cross-check and warn (do not fail): a large gap flags a broken header.
-    if fps and nominal_fps and nominal_fps > 0 \
-            and abs(fps - nominal_fps) / nominal_fps > _FPS_REL_TOLERANCE:
-        logger.warning(
-            f"{filename}: effective fps {fps:.6f} differs from header nominal "
-            f"{nominal_fps:.6f} (frame_count={frame_count}, duration={duration}); "
-            f"using effective fps.")
-
-    if duration is not None and duration > MAX_DURATION:
-        raise ValueError(f"Video exceeds maximum duration ({MAX_DURATION}s): length={duration}")
-    if not _is_plausible(width, height, fps, frame_count, duration):
-        raise ValueError(
-            f"implausible result for {filename} (w={width}, h={height}, fps={fps}, "
-            f"frames={frame_count}, len={duration})")
-
-    return int(width), int(height), float(fps), int(frame_count), float(duration)
+    # Normalise None -> NaN so the row is uniform for tabular storage.
+    for k, v in row.items():
+        if v is None:
+            row[k] = np.nan
+    return row
