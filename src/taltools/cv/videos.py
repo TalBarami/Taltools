@@ -245,22 +245,112 @@ def _is_plausible(width, height, fps, frame_count, length):
                 and width > 0 and height > 0 and fps > 0 and frame_count > 0 and length > 0)
 
 
+# Relative gap between the header's nominal fps and the effective fps
+# (frame_count / duration) beyond which we warn. Clinical captures routinely
+# label a nominal 25/1 while actually running at ~25.03 fps; that ~0.13% drift is
+# enough to misplace late-video annotations by several frames.
+_FPS_REL_TOLERANCE = 0.0005
+
+
+def _header_meta(filename):
+    """Cheap header read for the fields we can trust from a header: width,
+    height, a *nominal* fps, and duration. Returns
+    (width, height, nominal_fps, duration); any field may be None except
+    width/height (a probe that yields no resolution raises). Tries the
+    ffmpeg-python wrapper first, then the ffprobe binary directly.
+
+    NOTE: the frame_count these probers return is deliberately discarded here —
+    when the header lacks nb_frames it is fabricated from duration * nominal_fps,
+    which is exactly the value we must not trust. The authoritative count comes
+    from packet counting in get_video_properties.
+    """
+    last_err = None
+    for prober in (_ffmpeg_probe, _ffprobe_fallback):
+        try:
+            width, height, fps, _frame_count, duration = prober(filename)
+            return width, height, fps, duration
+        except Exception as e:
+            logger.debug(f"{prober.__name__} header read failed for {filename}: {e}")
+            last_err = e
+    raise RuntimeError(f"header read failed for {filename}: {last_err}")
+
+
 def get_video_properties(filename):
+    """Probe a video, composing each field from its most trustworthy source.
+
+    - width/height/duration/nominal_fps: cheap header read.
+    - frame_count: packet count (nb_read_packets) — the only header-derived
+      count we trust; full cv2 decode as a last resort.
+    - fps: effective rate = frame_count / duration, falling back to the header's
+      nominal fps only when duration is unavailable.
+
+    This intentionally always demuxes (one -count_packets pass) rather than
+    returning the first "plausible" header result, because a header missing
+    nb_frames yields a plausible-but-wrong frame_count (duration * nominal_fps)
+    that would otherwise win and skip the accurate path.
+    """
     if not osp.exists(filename):
         raise FileNotFoundError(f"File not found: {filename}")
-    errors = []
-    # Ordered cheapest/most-informative first, slowest/most-robust last.
-    for strategy in (_ffmpeg_probe, _ffprobe_fallback, _ffprobe_count, _cv2_fallback):
+
+    width = height = nominal_fps = duration = None
+
+    # 1. Cheap header read — trust only width/height/duration/nominal_fps.
+    try:
+        width, height, nominal_fps, duration = _header_meta(filename)
+    except Exception as e:
+        logger.warning(f"_header_meta failed for {filename}: {e}")
+
+    # 2. Authoritative frame count via packet demux (also backfills any header
+    #    field that was missing above).
+    frame_count = None
+    try:
+        cw, ch, cfps, frame_count, cdur = _ffprobe_count(filename)
+        width = width or cw
+        height = height or ch
+        nominal_fps = nominal_fps or cfps
+        duration = duration or cdur
+    except Exception as e:
+        logger.warning(f"_ffprobe_count failed for {filename}: {e}")
+
+    # 3. Last resort: full decode (recovers count and resolution when both
+    #    header and packet probes failed).
+    if frame_count is None or not width or not height:
         try:
-            width, height, fps, frame_count, length = strategy(filename)
-            if length is not None and length > MAX_DURATION:
-                raise ValueError(f"Video exceeds maximum duration ({MAX_DURATION}s): length={length}")
-            if not _is_plausible(width, height, fps, frame_count, length):
-                raise ValueError(
-                    f"implausible result (w={width}, h={height}, fps={fps}, "
-                    f"frames={frame_count}, len={length})")
-            return int(width), int(height), float(fps), int(frame_count), float(length)
+            dw, dh, dfps, frame_count, ddur = _cv2_fallback(filename)
+            width = width or dw
+            height = height or dh
+            nominal_fps = nominal_fps or dfps
+            # cv2's duration is frame_count / nominal_fps (i.e. wrong when the
+            # nominal fps is wrong) — only adopt it if we have nothing better.
+            duration = duration or ddur
         except Exception as e:
-            logger.warning(f"{strategy.__name__} failed for {filename}: {e}")
-            errors.append((strategy.__name__, e))
-    raise RuntimeError(f"Unable to get video properties for {filename}. Attempts: {errors}")
+            logger.warning(f"_cv2_fallback failed for {filename}: {e}")
+
+    if frame_count is None:
+        raise RuntimeError(f"Unable to determine frame count for {filename}")
+
+    # 4. Effective fps = frame_count / duration; fall back to nominal fps and, if
+    #    needed, reconstruct duration from it.
+    if duration and duration > 0:
+        fps = frame_count / duration
+    else:
+        fps = nominal_fps
+        if fps and fps > 0:
+            duration = frame_count / fps
+
+    # 5. Cross-check and warn (do not fail): a large gap flags a broken header.
+    if fps and nominal_fps and nominal_fps > 0 \
+            and abs(fps - nominal_fps) / nominal_fps > _FPS_REL_TOLERANCE:
+        logger.warning(
+            f"{filename}: effective fps {fps:.6f} differs from header nominal "
+            f"{nominal_fps:.6f} (frame_count={frame_count}, duration={duration}); "
+            f"using effective fps.")
+
+    if duration is not None and duration > MAX_DURATION:
+        raise ValueError(f"Video exceeds maximum duration ({MAX_DURATION}s): length={duration}")
+    if not _is_plausible(width, height, fps, frame_count, duration):
+        raise ValueError(
+            f"implausible result for {filename} (w={width}, h={height}, fps={fps}, "
+            f"frames={frame_count}, len={duration})")
+
+    return int(width), int(height), float(fps), int(frame_count), float(duration)
