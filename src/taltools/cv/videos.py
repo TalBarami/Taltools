@@ -287,10 +287,13 @@ CANONICAL_COLUMNS = [
 ]
 
 
-def _probe_full(filename):
-    """Single ffprobe pass: header fields AND the demuxed packet count.
+def _probe(filename):
+    """One ffprobe demux: header fields, packet count, AND per-packet PTS.
 
-    Returns a dict of raw fields (numeric values None when absent/unparseable).
+    A single ``-count_packets`` pass that also emits ``packet=pts_time``, so the
+    frame count (``nb_read_packets``) and the PTS-derived fps come from the SAME
+    demux — no second pass. Returns a dict of raw header fields plus
+    ``nb_read_packets`` and ``pts`` (list of parseable timestamps in seconds).
     Raises if there is no video stream or no resolution.
     """
     result = subprocess.run([
@@ -299,20 +302,22 @@ def _probe_full(filename):
         '-count_packets',
         '-show_entries',
         'stream=width,height,r_frame_rate,avg_frame_rate,nb_frames,nb_read_packets,duration'
-        ':format=duration',
+        ':format=duration:packet=pts_time',
         '-of', 'json', filename,
     ], capture_output=True, text=True, timeout=MAX_DURATION)
     info = json.loads(result.stdout or '{}')
     streams = info.get('streams', [])
     if not streams:
-        raise ValueError(f"ffprobe(-count_packets) found no video streams in: {filename}")
+        raise ValueError(f"ffprobe found no video streams in: {filename}")
     s = streams[0]
     fmt = info.get('format', {})
     if 'width' not in s or 'height' not in s:
-        raise ValueError(f"ffprobe(-count_packets) found no resolution in: {filename}")
+        raise ValueError(f"ffprobe found no resolution in: {filename}")
 
     nb_frames = _parse_float(s.get('nb_frames'))
     packets = _parse_float(s.get('nb_read_packets'))
+    pts = [v for v in (_parse_float(p.get('pts_time'))
+                       for p in info.get('packets', [])) if v is not None]
     return {
         'width': int(s['width']),
         'height': int(s['height']),
@@ -321,32 +326,17 @@ def _probe_full(filename):
         'nb_frames_header': int(nb_frames) if nb_frames else None,
         'nb_read_packets': int(packets) if packets else None,
         'duration': _parse_float(s.get('duration')) or _parse_float(fmt.get('duration')),
+        'pts': pts,
     }
 
 
-def _probe_pts(filename):
-    """Demux packet presentation timestamps and derive fps directly from frame
-    spacing — independent of both the header `duration` field and the nominal
-    rate. Demux-only (no pixel decode). Returns a dict; fps_pts is None when
-    fewer than 2 usable timestamps are found.
+def _pts_stats(pts):
+    """fps derived directly from frame spacing — independent of the header
+    `duration` field and the nominal rate. fps_pts is None with < 2 timestamps.
     """
-    result = subprocess.run([
-        resolve_binary('ffprobe'), '-v', 'error',
-        '-select_streams', 'v:0',
-        '-show_entries', 'packet=pts_time',
-        '-of', 'csv=p=0', filename,
-    ], capture_output=True, text=True, timeout=MAX_DURATION)
-
-    pts = []
-    for line in result.stdout.splitlines():
-        v = _parse_float(line.strip().rstrip(','))  # csv may emit a trailing comma
-        if v is not None:
-            pts.append(v)
-
     if len(pts) < 2:
         return {'n_pts': len(pts), 'first_pts': None, 'last_pts': None,
                 'pts_span': None, 'fps_pts': None}
-
     first_pts, last_pts = min(pts), max(pts)
     span = last_pts - first_pts
     # N timestamps span (N-1) inter-frame intervals.
@@ -389,8 +379,10 @@ def get_video_properties(filename, *, validate_decode=False):
         if not osp.exists(filename):
             raise FileNotFoundError(f"File not found: {filename}")
 
-        # 1. Header + packet count (one demux pass).
-        row.update(_probe_full(filename))
+        # 1. One demux pass: header fields, packet count, and per-packet PTS.
+        probe = _probe(filename)
+        pts = probe.pop('pts', [])
+        row.update(probe)
 
         nominal_fps = row['avg_frame_rate'] or row['r_frame_rate']
         row['nominal_fps'] = nominal_fps if nominal_fps else np.nan
@@ -417,8 +409,8 @@ def get_video_properties(filename, *, validate_decode=False):
             row['error'] = f"Video exceeds maximum duration ({MAX_DURATION}s): length={duration}"
             return row
 
-        # 3. PTS cross-check (always).
-        row.update(_probe_pts(filename))
+        # 3. PTS cross-check (from the same demux — no extra pass).
+        row.update(_pts_stats(pts))
         fps_pts, n_pts, span = row['fps_pts'], row['n_pts'], row['pts_span']
         if fps_pts is not None and n_pts and n_pts > 1 and span:
             duration_pts = span * n_pts / (n_pts - 1)
